@@ -227,22 +227,26 @@ def aes_decrypt_block(block, round_keys):
     return bytes(state)
 
 # =============================================================================
-# Padding (PKCS#7)
+# Padding (PKCS#5 / PKCS#7)
 # =============================================================================
 
-def pkcs7_pad(data):
+def pkcs5_pad(data):
     """
-    Pads the input data to a multiple of 16 bytes.
-    The value of the padding bytes equals the number of bytes added.
+    Pads the input data to a multiple of 16 bytes (AES block size).
+    Note: For AES, PKCS#5 and PKCS#7 are the same thing.
     """
     pad_len = 16 - (len(data) % 16)
+    # Append pad_len bytes, each with the value of pad_len
     return data + bytes([pad_len] * pad_len)
 
-def pkcs7_unpad(data):
+def pkcs5_unpad(data):
     """
-    Removes the PKCS#7 padding after decryption.
+    Removes the PKCS#5/7 padding after decryption.
     """
     pad_len = data[-1]
+    # Check if padding is valid (1-16)
+    if pad_len < 1 or pad_len > 16:
+        return data
     return data[:-pad_len]
 
 # =============================================================================
@@ -263,14 +267,30 @@ def process_aes(mode):
         return
 
     with open(key_file, "r") as f:
-        key_hex = f.read().strip()
-        key = bytes.fromhex(key_hex)
+        key_raw = f.read().strip()
+        
+    # Handle Key Format: 128-bit key can be 32 Hex chars OR 16 Text chars
+    try:
+        if len(key_raw) == 32:
+            # Assume Hexadecimal (e.g. 2b7e1516...)
+            key = bytes.fromhex(key_raw)
+        elif len(key_raw) == 16:
+            # Assume Plain Text (e.g. YELLOW SUBMARINE)
+            key = key_raw.encode('utf-8')
+        else:
+            print(f"Error: Key must be 128-bit.")
+            print(f"- If Hex: 32 characters (0-9, a-f)")
+            print(f"- If Text: 16 characters")
+            return
+    except ValueError:
+        # If fromhex fails, try treating as 16-byte text
+        if len(key_raw) == 16:
+            key = key_raw.encode('utf-8')
+        else:
+            print("Error: Invalid key format. Use 32 hex characters.")
+            return
 
-    if len(key) != 16:
-        print("Error: Key must be 128 bits (32 hex characters).")
-        return
-
-    # Generate round keys
+    # Generate round keys for AES-128
     round_keys = key_expansion(key)
 
     # Load input data
@@ -283,29 +303,41 @@ def process_aes(mode):
         with open(input_file, "r", encoding='utf-8') as f:
             data = f.read().encode('utf-8')
         
-        data_padded = pkcs7_pad(data)
+        data_padded = pkcs5_pad(data)
         ciphertext = b""
         for i in range(0, len(data_padded), 16):
             ciphertext += aes_encrypt_block(data_padded[i:i+16], round_keys)
         
         with open(output_file, "w") as f:
             f.write(ciphertext.hex())
-        print(f"Encryption complete. Hex result saved to {output_file}")
+        print(f"Encryption complete (Mode: ECB, Padding: PKCS5).")
+        print(f"Hex result saved to {output_file}")
 
     elif mode == 'decrypt':
         # Decrypt: Read Hex -> Process -> Unpad -> Save as Text
         with open(input_file, "r") as f:
             data_hex = f.read().strip()
+        
+        try:
             data = bytes.fromhex(data_hex)
+        except ValueError:
+            print(f"Error: {input_file} must contain a valid hexadecimal string for decryption.")
+            print("Hint: If you just want to test, run 'python aes.py encrypt' first to generate valid hex input.")
+            return
         
         decrypted_padded = b""
         for i in range(0, len(data), 16):
             decrypted_padded += aes_decrypt_block(data[i:i+16], round_keys)
         
-        plaintext = pkcs7_unpad(decrypted_padded)
-        with open(output_file, "w", encoding='utf-8') as f:
-            f.write(plaintext.decode('utf-8'))
-        print(f"Decryption complete. Plaintext saved to {output_file}")
+        plaintext = pkcs5_unpad(decrypted_padded)
+        try:
+            result = plaintext.decode('utf-8')
+            with open(output_file, "w", encoding='utf-8') as f:
+                f.write(result)
+            print(f"Decryption complete (Mode: ECB, Padding: PKCS5).")
+            print(f"Plaintext saved to {output_file}")
+        except UnicodeDecodeError:
+            print("Error: Decrypted data is not valid text. Check your key/padding.")
 
 if __name__ == "__main__":
     import sys
@@ -317,6 +349,12 @@ if __name__ == "__main__":
         # Setup sample files if they don't exist
         if not os.path.exists("key.txt"):
             with open("key.txt", "w") as f: f.write("2b7e151628aed2a6abf7158809cf4f3c")
+        
+        # Create a helpful sample message if input.txt is empty or missing
         if not os.path.exists("input.txt"):
             with open("input.txt", "w") as f: f.write("Hello University Assignment!")
-        print("\nDefault samples created. Try: 'python aes.py encrypt'")
+        
+        print("\nReady to test!")
+        print("1. Run 'python aes.py encrypt' to turn input.txt into hex.")
+        print("2. Copy the result from output.txt back to input.txt.")
+        print("3. Run 'python aes.py decrypt' to get your message back.")
