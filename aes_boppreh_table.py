@@ -125,111 +125,157 @@ def inv_mix_columns(s):
     mix_columns(s)
 
 class AES:
-
-    rounds_by_key_size = {
-        16: 10,
-        24: 12,
-        32: 14
-    }
-
     def __init__(self, master_key):
-        self.n_rounds = AES.rounds_by_key_size[len(master_key)]
+        if len(master_key) != 16:
+            raise ValueError("Only 128-bit keys (16 bytes) are supported.")
+        self.n_rounds = 10
         self._key_matrices = self._expand_key(master_key)
 
     def _expand_key(self, master_key):
-
         key_columns = bytes2matrix(master_key)
-        iteration_size = len(master_key) // 4
-
         i = 1
 
-        while len(key_columns) < (self.n_rounds + 1) * 4:
-
+        while len(key_columns) < 44: # (10 + 1) * 4
             word = list(key_columns[-1])
 
-            if len(key_columns) % iteration_size == 0:
-
+            if len(key_columns) % 4 == 0:
                 word.append(word.pop(0))
                 word = [s_box[b] for b in word]
                 word[0] ^= r_con[i]
                 i += 1
 
-            elif len(master_key) == 32 and len(key_columns) % iteration_size == 4:
-                word = [s_box[b] for b in word]
-
-            word = xor_bytes(word, key_columns[-iteration_size])
+            word = xor_bytes(word, key_columns[-4])
             key_columns.append(word)
 
         return [
             key_columns[4*i : 4*(i+1)]
-            for i in range(len(key_columns) // 4)
+            for i in range(11)
         ]
 
-    def encrypt_block(self, plaintext):
-
+    def encrypt_block_custom(self, plaintext, 
+                              sub_bytes_enabled=True, 
+                              shift_rows_enabled=True, 
+                              mix_columns_enabled=True, 
+                              add_round_key_enabled=True):
+        """Returns a list of states after each AddRoundKey step (or equivalent end of round)."""
+        states = []
         state = bytes2matrix(plaintext)
-        print(f"Round 00 (initial state): {matrix2bytes(state).hex()}")
-
-        add_round_key(state, self._key_matrices[0])
-        print(f"Round 00 (after AddRoundKey): {matrix2bytes(state).hex()}")
+        
+        # Initial AddRoundKey (Round 0)
+        if add_round_key_enabled:
+            add_round_key(state, self._key_matrices[0])
+        states.append(matrix2bytes(state))
 
         for i in range(1, self.n_rounds):
+            if sub_bytes_enabled:
+                sub_bytes(state)
+            if shift_rows_enabled:
+                shift_rows(state)
+            if mix_columns_enabled:
+                mix_columns(state)
+            if add_round_key_enabled:
+                add_round_key(state, self._key_matrices[i])
+            states.append(matrix2bytes(state))
+
+        # Final round (Round 10)
+        if sub_bytes_enabled:
             sub_bytes(state)
+        if shift_rows_enabled:
             shift_rows(state)
-            mix_columns(state)
-            add_round_key(state, self._key_matrices[i])
-            print(f"Round {i:02} (after AddRoundKey): {matrix2bytes(state).hex()}")
+        # Note: Standard AES doesn't have mix_columns in the last round.
+        if add_round_key_enabled:
+            add_round_key(state, self._key_matrices[-1])
+        states.append(matrix2bytes(state))
 
-        sub_bytes(state)
-        shift_rows(state)
-        add_round_key(state, self._key_matrices[-1])
-        print(f"Round {self.n_rounds:02} (after AddRoundKey): {matrix2bytes(state).hex()}")
+        return states
 
-        return matrix2bytes(state)
+def hamming_distance(a, b):
+    return sum(bin(i ^ j).count('1') for i, j in zip(a, b))
 
-    def decrypt_block(self, ciphertext):
-
-        state = bytes2matrix(ciphertext)
-
-        add_round_key(state, self._key_matrices[-1])
-
-        inv_shift_rows(state)
-        inv_sub_bytes(state)
-
-        for i in range(self.n_rounds - 1, 0, -1):
-
-            add_round_key(state, self._key_matrices[i])
-            inv_mix_columns(state)
-
-            inv_shift_rows(state)
-            inv_sub_bytes(state)
-
-        add_round_key(state, self._key_matrices[0])
-
-        return matrix2bytes(state)
+def bytes_to_bits(b, length=16):
+    return ''.join(format(byte, '08b') for byte in b[:length])
 
 # =========================
-# Example usage
+# Summary Comparison Table
 # =========================
+
+def print_summary_table(avg_diffs, n_rounds, n_runs):
+    """
+    avg_diffs: 2D array [round][variant_index]
+    """
+    print("\nTable: Average Bit Difference (Hamming Distance) vs AES0 over 128 iterations")
+    header = f"{'Round':<6} | " + " | ".join([f"AES{i} Avg" for i in range(1, n_runs)]) + " | Overall Avg"
+    print(header)
+    print("-" * len(header))
+
+    total_sum = 0
+    for r in range(n_rounds + 1):
+        round_diffs = avg_diffs[r]
+        row_avg = sum(round_diffs) / len(round_diffs)
+        total_sum += row_avg
+        
+        row = f"{r:02}     | "
+        row += " | ".join([f"{d:<9.1f}" for d in round_diffs])
+        row += f" | {row_avg:.1f}"
+        print(row)
+
+    print("-" * len(header))
+    print(f"Overall Total Average Bit Difference: {total_sum / (n_rounds + 1):.1f}")
 
 if __name__ == "__main__":
 
-    print("AES-128 ENCRYPTION")
+    print("AES ARCHITECTURAL COMPARISON (Averaged over 128 inputs)")
+    print("-" * 80)
+    print("AES0: Standard AES")
+    print("AES1: No SubBytes")
+    print("AES2: No ShiftRows")
+    print("AES3: No MixColumns (Rounds 1-9)")
+    print("AES4: No AddRoundKey (Every Round)")
+    print("-" * 80)
+
+    key = b'\xff' * 16 # Fixed 128-bit key of all 1s
+    n_rounds = 10
+    n_runs = 5
+    n_iterations = 129 # 1 (all zero) + 128 (bit flips)
     
-    # 128-bit key of all 1s (0xFF...FF)
-    key = b'\xff' * 16
-    # 128-bit plaintext of all 0s (0x00...00)
-    plaintext = b'\x00' * 16
-    
-    print(f"Plaintext: {plaintext.hex()}")
-    print(f"Key:       {key.hex()}")
-    print("-" * 40)
+    # Cumulative differences [round][variant_idx-1]
+    accumulated_diffs = [[0.0] * (n_runs - 1) for _ in range(n_rounds + 1)]
 
     aes = AES(key)
-    ciphertext = aes.encrypt_block(plaintext)
-    
-    print("-" * 40)
-    print(f"Final Ciphertext: {ciphertext.hex()}")
+    key_bits = bytes_to_bits(key)
 
-    decrypted = aes.decrypt_block(ciphertext)
-    print(f"Decrypted:        {decrypted.hex()}")
+    for i in range(n_iterations):
+        if i == 0:
+            # Case 0: All zeros
+            pt = b'\x00' * 16
+            desc = "All Zeros"
+        else:
+            # Cases 1-128: Bit flipping from left to right
+            # i = 1: bit 127 set (leftmost)
+            # i = 128: bit 0 set (rightmost)
+            pt_int = 1 << (128 - i)
+            pt = pt_int.to_bytes(16, 'big')
+            desc = f"Bit Flip {i-1:03}"
+            
+        pt_bits = bytes_to_bits(pt, 16)
+        
+        # Iteration status line
+        print(f"Iteration {i:03}/{n_iterations-1} ({desc}) completed. PT (bin): {pt_bits[:16]}...{pt_bits[-16:]}, Key (bin): {key_bits[:16]}...")
+
+        # Run all variants
+        res0 = aes.encrypt_block_custom(pt)
+        res1 = aes.encrypt_block_custom(pt, sub_bytes_enabled=False)
+        res2 = aes.encrypt_block_custom(pt, shift_rows_enabled=False)
+        res3 = aes.encrypt_block_custom(pt, mix_columns_enabled=False)
+        res4 = aes.encrypt_block_custom(pt, add_round_key_enabled=False)
+        
+        variants_res = [res1, res2, res3, res4]
+        
+        for r in range(n_rounds + 1):
+            for v_idx, v_res in enumerate(variants_res):
+                accumulated_diffs[r][v_idx] += hamming_distance(res0[r], v_res[r])
+
+    # Calculate averages
+    avg_diffs = [[accumulated_diffs[r][v] / n_iterations for v in range(n_runs - 1)] for r in range(n_rounds + 1)]
+
+    print_summary_table(avg_diffs, n_rounds, n_runs)
